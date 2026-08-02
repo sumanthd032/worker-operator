@@ -73,7 +73,7 @@ type ProbeConfig struct {
 	Timeout time.Duration
 }
 
-// NewProbe returns a prober that reads each candidate's copy of this worker's
+// NewProbe returns a Prober that reads each candidate's copy of this worker's
 // Cluster CR through the reader built for that candidate by readerFor.
 //
 // readerFor is a function rather than a prepared map because a candidate's
@@ -82,7 +82,7 @@ type ProbeConfig struct {
 // the intent: these probes must keep working across a failover, so they are
 // deliberately independent of the worker's primary hub connection, which is the
 // thing a failover replaces.
-func NewProbe(readerFor func(HubCandidate) (ClusterReader, error), cfg ProbeConfig) prober {
+func NewProbe(readerFor func(HubCandidate) (ClusterReader, error), cfg ProbeConfig) Prober {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = DefaultProbeTimeout
 	}

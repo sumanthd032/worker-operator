@@ -99,10 +99,10 @@ type Verdict struct {
 	Err   error
 }
 
-// prober reads one candidate's copy of this worker's Cluster CR. It is a field
+// Prober reads one candidate's copy of this worker's Cluster CR. It is a field
 // on Resolver rather than a hardcoded call so the decision logic can be tested
 // without a cluster, and so a caller can supply a client built however it likes.
-type prober func(ctx context.Context, candidate HubCandidate) Verdict
+type Prober func(ctx context.Context, candidate HubCandidate) Verdict
 
 // Options configures a Resolver. Zero-valued fields fall back to the Default*
 // constants.
@@ -120,7 +120,7 @@ type Options struct {
 // suppresses flapping, and it is meant to be driven by a single polling loop.
 type Resolver struct {
 	candidates []HubCandidate
-	probe      prober
+	probe      Prober
 
 	confirmations int
 	log           logr.Logger
@@ -133,7 +133,7 @@ type Resolver struct {
 }
 
 // New builds a Resolver over a fixed candidate set.
-func New(candidates []HubCandidate, probe prober, opts Options) (*Resolver, error) {
+func New(candidates []HubCandidate, probe Prober, opts Options) (*Resolver, error) {
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("resolver requires at least one hub candidate")
 	}

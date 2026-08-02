@@ -56,7 +56,7 @@ func clusterWith(activeController map[string]interface{}) *unstructured.Unstruct
 }
 
 // probeReturning builds a probe whose single reader serves obj (or err).
-func probeReturning(t *testing.T, obj *unstructured.Unstructured, err error, timeout time.Duration) prober {
+func probeReturning(t *testing.T, obj *unstructured.Unstructured, err error, timeout time.Duration) Prober {
 	t.Helper()
 	reader := readerFunc(func(ctx context.Context, key types.NamespacedName, into *unstructured.Unstructured) error {
 		assert.Equal(t, testCluster, key.Name, "the probe must read this worker's own Cluster CR")

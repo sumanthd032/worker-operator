@@ -56,7 +56,7 @@ func unreachable(c HubCandidate) Verdict {
 }
 
 // staticProbe answers each candidate from a fixed table.
-func staticProbe(verdicts map[string]Verdict) prober {
+func staticProbe(verdicts map[string]Verdict) Prober {
 	return func(_ context.Context, c HubCandidate) Verdict {
 		if v, ok := verdicts[c.Endpoint]; ok {
 			return v
@@ -65,7 +65,7 @@ func staticProbe(verdicts map[string]Verdict) prober {
 	}
 }
 
-func newResolver(t *testing.T, probe prober, confirmations int) *Resolver {
+func newResolver(t *testing.T, probe Prober, confirmations int) *Resolver {
 	t.Helper()
 	r, err := New(candidates(), probe, Options{SwitchConfirmations: confirmations})
 	mustNoErr(t, err)
