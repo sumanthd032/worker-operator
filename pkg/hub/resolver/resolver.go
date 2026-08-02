@@ -279,7 +279,28 @@ func (r *Resolver) pick(claims []Claim) *Claim {
 // act on: either the established winner, or a challenger that has now agreed
 // with itself enough times to replace it.
 func (r *Resolver) confirm(winner *Claim) *Claim {
-	if r.current != nil && sameTarget(r.current, winner) {
+	// The confirmation rule guards a *change* of hub: it exists so a single
+	// divergent poll cannot re-point a worker that is already connected
+	// somewhere. With nothing established yet there is no connection to
+	// protect and nothing to flap between, so the first winner is taken as it
+	// stands.
+	//
+	// Requiring confirmations here instead makes startup resolution useless at
+	// any setting above one: the caller resolves once before opening a
+	// connection, that single call can never reach the threshold, and the
+	// worker falls back to its configured primary every time — including when
+	// the primary is the hub that just lost leadership. Found by running the
+	// failover demo, where startup logged "not yet confirmed, seen 1 need 2"
+	// and then ignored a correctly resolved Active.
+	if r.current == nil {
+		r.current = winner
+		r.pending = nil
+		r.pendingCount = 0
+		r.log.Info("active hub resolved", "identity", winner.Identity,
+			"endpoint", winner.Endpoint, "previous", "<none>")
+		return r.current
+	}
+	if sameTarget(r.current, winner) {
 		// Re-confirmation of the status quo clears any half-accumulated
 		// challenger; a challenger has to win consecutive polls, not cumulative
 		// ones.

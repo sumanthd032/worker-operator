@@ -228,9 +228,8 @@ func TestResolve_RequiresConsecutiveConfirmations(t *testing.T) {
 	}
 	r := newResolver(t, func(_ context.Context, c HubCandidate) Verdict { return verdicts[c.Endpoint] }, 3)
 
-	assert.Nil(t, resolveN(r, 2), "even the first winner must earn its confirmations")
 	got := resolveN(r, 1)
-	mustClaim(t, got, "")
+	mustClaim(t, got, "the first winner is taken at once; there is no connection to protect yet")
 	assert.Equal(t, "hub-a-1", got.Identity)
 
 	// hub B takes over.
@@ -336,4 +335,27 @@ func mustClaim(t *testing.T, got *Claim, msg string) *Claim {
 		t.Fatal(msg)
 	}
 	return got
+}
+
+// TestResolve_FirstWinnerNeedsNoConfirmation is the regression test for a bug
+// the live failover demo found. Callers resolve once before opening a
+// connection, so if the very first selection also had to clear the confirmation
+// threshold, that single call could never reach it and startup resolution would
+// silently fall back to the configured primary at any setting above one —
+// including when the primary is the hub that just lost leadership.
+//
+// The threshold guards a *change* of hub. Before anything is established there
+// is no connection to protect and nothing to flap between.
+func TestResolve_FirstWinnerNeedsNoConfirmation(t *testing.T) {
+	for _, confirmations := range []int{1, 2, 5} {
+		r := newResolver(t, staticProbe(map[string]Verdict{
+			hubA.Endpoint: unreachable(hubA),
+			hubB.Endpoint: declares(hubB, hubB, "hub-b-1", time.Second),
+		}), confirmations)
+
+		got := r.Resolve(context.Background())
+		mustClaim(t, got, "a single startup resolve must produce an answer")
+		assert.Equal(t, "hub-b-1", got.Identity,
+			"confirmations=%d: startup must not fall back when a hub plainly declares itself", confirmations)
+	}
 }
