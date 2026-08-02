@@ -19,6 +19,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"os"
 	"strings"
@@ -65,8 +66,10 @@ import (
 	"github.com/kubeslice/worker-operator/controllers/slice"
 	"github.com/kubeslice/worker-operator/controllers/slicegateway"
 	ossEvents "github.com/kubeslice/worker-operator/events"
+	"github.com/kubeslice/worker-operator/pkg/hub/failover"
 	hub "github.com/kubeslice/worker-operator/pkg/hub/hubclient"
 	"github.com/kubeslice/worker-operator/pkg/hub/manager"
+	"github.com/kubeslice/worker-operator/pkg/hub/resolver"
 	"github.com/kubeslice/worker-operator/pkg/logger"
 	"github.com/kubeslice/worker-operator/pkg/networkpolicy"
 	"github.com/kubeslice/worker-operator/pkg/utils"
@@ -165,7 +168,22 @@ func main() {
 		//view.SetReportingPeriod(10 * time.Millisecond)
 	}
 
-	hubClient, err := hub.NewHubClientConfig(er)
+	// Decide which hub to talk to before any client is built. Inert unless
+	// HUB_SECONDARY_HOST_ENDPOINT is set, in which case hubConn is exactly the
+	// primary connection this worker has always used.
+	hubConn := hub.PrimaryConnection()
+	failoverCfg := failover.ConfigFromEnv()
+	var hubFollower *failover.Follower
+	if failoverCfg.Enabled() {
+		hubFollower, err = failover.New(failoverCfg, hubConn, ctrl.Log.WithName("hub-failover"), nil)
+		if err != nil {
+			setupLog.With("error", err).Error("could not configure hub failover following")
+			os.Exit(1)
+		}
+		hubConn = hubFollower.StartupConnection(context.Background())
+	}
+
+	hubClient, err := hub.NewHubClientConfig(er, hubConn)
 	if err != nil {
 		setupLog.With("error", err).Error("could not create hub client for slice gateway reconciler")
 		os.Exit(1)
@@ -193,7 +211,11 @@ func main() {
 		Scheme: scheme,
 	})
 
-	ctx := ctrl.SetupSignalHandler()
+	// Cancellable so a resolved hub failover can shut this process down the same
+	// way a signal would: the manager drains, the process exits 0, and the
+	// kubelet restarts it against the hub that is now Active.
+	ctx, stopForHubSwitch := context.WithCancel(ctrl.SetupSignalHandler())
+	defer stopForHubSwitch()
 
 	mf, err := metrics.NewMetricsFactory(ctrlmetrics.Registry, metrics.MetricsFactoryOptions{
 		Cluster:             controllers.ClusterName,
@@ -310,8 +332,22 @@ func main() {
 	}
 	go func() {
 		setupLog.Info("starting hub manager")
-		manager.Start(clientForHubMgr, hubClient, ctx)
+		manager.Start(clientForHubMgr, hubClient, ctx, hubConn)
 	}()
+
+	if hubFollower != nil {
+		go hubFollower.Watch(ctx, hubConn, func(claim resolver.Claim) {
+			// Restart rather than rebuild. Both hub connections are assembled
+			// once during startup from a rest.Config, and manager.Start exits
+			// the process on any hub error already, so a clean restart is both
+			// the smaller change and the one this process is already built for.
+			// The data plane is untouched: gateways and tunnels run in their
+			// own pods.
+			setupLog.With("endpoint", claim.Endpoint, "identity", claim.Identity).
+				Info("active hub changed; shutting down to reconnect")
+			stopForHubSwitch()
+		})
+	}
 
 	setupLog.Info("starting manager")
 	if err := mgr.Start(ctx); err != nil {
