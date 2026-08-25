@@ -117,3 +117,33 @@ With both hubs up, the worker logs which hub it resolved at startup and then sta
 Active controller; once the Standby promotes itself, the worker logs `active hub changed`,
 increments `kubeslice_worker_hub_switches_total`, exits, and comes back connected to the promoted
 hub. Gateway pods should not restart at any point — that is the part worth watching.
+
+## Connection observability (#469)
+
+The worker's own `Cluster` CR on the hub carries two Conditions:
+
+| Condition | Meaning |
+|---|---|
+| `ControllerConnected` | Is this worker currently reconciling against a hub |
+| `ControllerEndpointSynced` | Does the connected endpoint match the currently resolved active hub |
+
+Reasons: `Connected` (steady state), `ReconnectedAfterFailover` (the first reconcile after
+following a resolved switch), `EndpointNotConfigured` (no secondary hub configured — the normal
+non-HA case, status `Unknown`, not an error), `Reconnecting` (best-effort, written just before the
+process restarts to follow a switch), `DialFailed`/`CertVerificationFailed`.
+
+`DialFailed` and `CertVerificationFailed` are real reason values — see
+`pkg/hub/hubclient.ClassifyConnectionError`, unit-tested against fake dial errors — but by
+construction they will rarely persist on the CR: writing either one needs the same connection that
+just failed. Metrics and logs remain the reliable live-detection channel:
+
+- `kubeslice_worker_controller_reconnect_attempts_total{result}` — startup connection decisions
+  (`primary`, `resolved-switch`, `unresolved`), next to the existing `kubeslice_worker_hub_switches_total`
+  and `kubeslice_worker_hub_probe_errors_total` in `pkg/hub/failover/failover.go`.
+- `kubeslice_worker_controller_last_sync_time_seconds` — when the last startup decision was made.
+
+Four Events, all on the worker's `Cluster` CR: `ControllerEndpointChanged` (fires once, the same
+reconcile that reports `ReconnectedAfterFailover`), `ControllerConnected` (fires on the transition
+into `Connected`), `ControllerConnectionLost` (best-effort, written from the `Watch` callback right
+before the process restarts to follow a switch), and `CertVerificationFailed` (defined, not
+currently fired from any live path — same limitation as the condition reason above).
