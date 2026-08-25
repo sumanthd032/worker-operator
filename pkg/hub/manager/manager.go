@@ -69,7 +69,9 @@ func init() {
 // Start runs the hub-side manager against the hub described by conn. Callers
 // with a single hub pass hub.PrimaryConnection(), which is the same endpoint
 // and credentials this function used to assemble from the environment itself.
-func Start(meshClient client.Client, hubClient client.Client, ctx context.Context, conn hub.Connection) {
+// connInfo carries what main.go already knows about failover-following
+// (issue #469) for the cluster reconciler's ControllerConnected condition.
+func Start(meshClient client.Client, hubClient client.Client, ctx context.Context, conn hub.Connection, connInfo hubCluster.ConnectionInfo) {
 	config := conn.RestConfig()
 
 	var log = log.Log.WithName("hub")
@@ -203,6 +205,7 @@ func Start(meshClient client.Client, hubClient client.Client, ctx context.Contex
 		meshClient,
 		&workerSliceEventRecorder,
 		mf,
+		connInfo,
 	)
 	err = builder.
 		ControllerManagedBy(mgr).

@@ -167,10 +167,11 @@ func TestStartupConnection_UsesTheWinnersOwnCredentials(t *testing.T) {
 	}
 	f := newFollower(t, testConfig(), table)
 
-	conn := f.StartupConnection(context.Background())
+	conn, reconnected := f.StartupConnection(context.Background())
 	assert.Equal(t, secondaryEndpoint, conn.Endpoint)
 	assert.Equal(t, "/creds/b/token", conn.TokenFile, "the winner's token must travel with its endpoint")
 	assert.Equal(t, "/creds/b/ca.crt", conn.CAFile, "the winner's CA must travel with its endpoint")
+	assert.True(t, reconnected, "a winner other than the primary is a resolved switch")
 }
 
 func TestStartupConnection_SteadyStateStaysOnThePrimary(t *testing.T) {
@@ -180,8 +181,9 @@ func TestStartupConnection_SteadyStateStaysOnThePrimary(t *testing.T) {
 	}
 	f := newFollower(t, testConfig(), table)
 
-	conn := f.StartupConnection(context.Background())
+	conn, reconnected := f.StartupConnection(context.Background())
 	assert.Equal(t, primaryConn(), conn, "both hubs naming hub A is agreement, not a conflict")
+	assert.False(t, reconnected, "staying on the primary is not a resolved switch")
 }
 
 // TestStartupConnection_FallsBackWhenNothingResolves: a worker that refused to
@@ -200,7 +202,9 @@ func TestStartupConnection_FallsBackWhenNothingResolves(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFollower(t, testConfig(), table)
-			assert.Equal(t, primaryConn(), f.StartupConnection(context.Background()))
+			conn, reconnected := f.StartupConnection(context.Background())
+			assert.Equal(t, primaryConn(), conn)
+			assert.False(t, reconnected, "falling back to the primary is not a resolved switch")
 		})
 	}
 }

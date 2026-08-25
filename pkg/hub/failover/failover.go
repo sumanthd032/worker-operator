@@ -65,10 +65,24 @@ var (
 		Name: "kubeslice_worker_hub_probe_errors_total",
 		Help: "Failed reads of a hub's copy of this worker's Cluster CR, by configured hub slot.",
 	}, []string{"hub"})
+	// controllerReconnectAttemptsTotal counts every resolved winner this
+	// worker acted on at startup, by whether it matched the configured
+	// primary or a resolved switch. It is deliberately not "every poll" —
+	// gather() already runs every tick and hubProbeErrorsTotal covers probe
+	// failures; this metric is about connection *decisions*, issue #469's ask.
+	controllerReconnectAttemptsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "kubeslice_worker_controller_reconnect_attempts_total",
+		Help: "Startup hub-connection decisions this worker has made, by result.",
+	}, []string{"result"})
+	controllerLastSyncTime = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "kubeslice_worker_controller_last_sync_time_seconds",
+		Help: "Unix time of the last resolved hub-connection decision at startup.",
+	})
 )
 
 func init() {
-	ctrlmetrics.Registry.MustRegister(hubSwitchesTotal, hubProbeErrorsTotal)
+	ctrlmetrics.Registry.MustRegister(hubSwitchesTotal, hubProbeErrorsTotal,
+		controllerReconnectAttemptsTotal, controllerLastSyncTime)
 }
 
 // Config is the failover-following configuration, read from the environment.
@@ -209,18 +223,25 @@ func New(cfg Config, primary hub.Connection, log logr.Logger,
 	}, nil
 }
 
-// StartupConnection resolves once and returns the hub to connect to.
+// StartupConnection resolves once and returns the hub to connect to, plus
+// whether that hub was reached by following a resolved switch rather than
+// falling back to the configured primary. The bool is issue #469's
+// "ReconnectedAfterFailover vs Connected" distinction: main.go has no other
+// way to know, since a fresh process looks identical whether it just started
+// normally or was just restarted to follow a failover.
 //
 // Falling back to the primary when nothing resolves is deliberate. A worker
 // that refused to start because it could not reach a hub would turn a hub
 // outage into a worker outage, and the primary is the same hub it would have
 // used before any of this existed.
-func (f *Follower) StartupConnection(ctx context.Context) hub.Connection {
+func (f *Follower) StartupConnection(ctx context.Context) (hub.Connection, bool) {
 	claim := f.resolver.Resolve(ctx)
 	if claim == nil {
 		f.log.Info("no active hub resolved at startup; using the configured primary",
 			"endpoint", f.primary.Endpoint)
-		return f.primary
+		controllerReconnectAttemptsTotal.WithLabelValues("unresolved").Inc()
+		controllerLastSyncTime.SetToCurrentTime()
+		return f.primary, false
 	}
 	conn, ok := f.byEndpoint[claim.Endpoint]
 	if !ok {
@@ -230,11 +251,20 @@ func (f *Follower) StartupConnection(ctx context.Context) hub.Connection {
 		// cannot silently produce a connection with mismatched credentials.
 		f.log.Info("resolved hub is not a configured connection; using the primary",
 			"resolvedEndpoint", claim.Endpoint)
-		return f.primary
+		controllerReconnectAttemptsTotal.WithLabelValues("unresolved").Inc()
+		controllerLastSyncTime.SetToCurrentTime()
+		return f.primary, false
 	}
 	f.log.Info("connecting to the resolved active hub",
 		"identity", claim.Identity, "endpoint", conn.Endpoint)
-	return conn
+	viaSwitch := conn.Endpoint != f.primary.Endpoint
+	result := "primary"
+	if viaSwitch {
+		result = "resolved-switch"
+	}
+	controllerReconnectAttemptsTotal.WithLabelValues(result).Inc()
+	controllerLastSyncTime.SetToCurrentTime()
+	return conn, viaSwitch
 }
 
 // Watch polls until ctx is done, calling onSwitch once the resolved active hub

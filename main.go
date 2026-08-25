@@ -42,6 +42,8 @@ import (
 	netop "github.com/kubeslice/worker-operator/pkg/netop"
 	router "github.com/kubeslice/worker-operator/pkg/router"
 
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -65,7 +67,9 @@ import (
 	"github.com/kubeslice/worker-operator/controllers/serviceimport"
 	"github.com/kubeslice/worker-operator/controllers/slice"
 	"github.com/kubeslice/worker-operator/controllers/slicegateway"
+	hubv1alpha1 "github.com/kubeslice/apis/pkg/controller/v1alpha1"
 	ossEvents "github.com/kubeslice/worker-operator/events"
+	hubCluster "github.com/kubeslice/worker-operator/pkg/hub/controllers/cluster"
 	"github.com/kubeslice/worker-operator/pkg/hub/failover"
 	hub "github.com/kubeslice/worker-operator/pkg/hub/hubclient"
 	"github.com/kubeslice/worker-operator/pkg/hub/manager"
@@ -174,14 +178,16 @@ func main() {
 	hubConn := hub.PrimaryConnection()
 	failoverCfg := failover.ConfigFromEnv()
 	var hubFollower *failover.Follower
+	var reconnected bool
 	if failoverCfg.Enabled() {
 		hubFollower, err = failover.New(failoverCfg, hubConn, ctrl.Log.WithName("hub-failover"), nil)
 		if err != nil {
 			setupLog.With("error", err).Error("could not configure hub failover following")
 			os.Exit(1)
 		}
-		hubConn = hubFollower.StartupConnection(context.Background())
+		hubConn, reconnected = hubFollower.StartupConnection(context.Background())
 	}
+	connInfo := hubCluster.ConnectionInfo{Enabled: failoverCfg.Enabled(), Reconnected: reconnected}
 
 	hubClient, err := hub.NewHubClientConfig(er, hubConn)
 	if err != nil {
@@ -332,7 +338,7 @@ func main() {
 	}
 	go func() {
 		setupLog.Info("starting hub manager")
-		manager.Start(clientForHubMgr, hubClient, ctx, hubConn)
+		manager.Start(clientForHubMgr, hubClient, ctx, hubConn, connInfo)
 	}()
 
 	if hubFollower != nil {
@@ -345,6 +351,7 @@ func main() {
 			// own pods.
 			setupLog.With("endpoint", claim.Endpoint, "identity", claim.Identity).
 				Info("active hub changed; shutting down to reconnect")
+			reportConnectionLost(hubClient, &sliceEventRecorder)
 			stopForHubSwitch()
 		})
 	}
@@ -354,4 +361,33 @@ func main() {
 		setupLog.With("error", err).Error("problem running manager")
 		os.Exit(1)
 	}
+}
+
+// reportConnectionLost makes one best-effort attempt to record, on the hub
+// this worker is about to leave, that it is doing so (issue #469's
+// ControllerConnectionLost event and Reconnecting condition). Best-effort
+// because the only connection available to write with is the one this
+// worker is abandoning — if that hub is itself the reason for the switch,
+// there is nothing to write to, and that failure is expected, not fatal.
+func reportConnectionLost(hubClient client.Client, er *monitoringEvents.EventRecorder) {
+	cr := &hubv1alpha1.Cluster{}
+	err := hubClient.Get(context.Background(), client.ObjectKey{
+		Name:      controllers.ClusterName,
+		Namespace: hub.ProjectNamespace,
+	}, cr)
+	if err != nil {
+		setupLog.With("error", err).Info("could not report connection loss before reconnecting; the hub may already be unreachable")
+		return
+	}
+	meta.SetStatusCondition(&cr.Status.Conditions, metav1.Condition{
+		Type:    hubCluster.ConditionControllerConnected,
+		Status:  metav1.ConditionUnknown,
+		Reason:  hubCluster.ReasonReconnecting,
+		Message: "following a resolved hub failover; reconnecting",
+	})
+	if err := hubClient.Status().Update(context.Background(), cr); err != nil {
+		setupLog.With("error", err).Info("could not persist the Reconnecting condition before restart")
+		return
+	}
+	utils.RecordEvent(context.Background(), er, cr, nil, ossEvents.EventControllerConnectionLost, "hub-failover")
 }
