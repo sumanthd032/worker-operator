@@ -107,10 +107,13 @@ type Prober func(ctx context.Context, candidate HubCandidate) Verdict
 // Options configures a Resolver. Zero-valued fields fall back to the Default*
 // constants.
 type Options struct {
-	// ProbeTimeout bounds each individual candidate read.
-	ProbeTimeout time.Duration
 	// SwitchConfirmations is how many consecutive agreeing polls are required
 	// before a change of winner is reported.
+	//
+	// There is deliberately no timeout here: a candidate read is bounded by
+	// ProbeConfig.Timeout, which belongs to the Prober the caller supplies.
+	// This struct used to carry a ProbeTimeout that New never read, which
+	// advertised a knob that did nothing.
 	SwitchConfirmations int
 	Log                 logr.Logger
 }
@@ -174,12 +177,20 @@ func (r *Resolver) Current() *Claim {
 }
 
 // Resolve probes every candidate once and returns the hub the worker should be
-// talking to, or nil to mean "change nothing".
+// talking to: the winner confirmed on this poll if there is one, and otherwise
+// the last winner confirmed on any earlier poll.
 //
-// Returning nil is a real answer, not an error: with no usable claim the
-// correct behaviour is to leave the existing connection alone. A worker that
-// disconnected whenever it was unsure would turn every hub blip into a worker
-// outage, which is strictly worse than talking to a hub that might be stale.
+// It therefore returns nil only until the first confirmation ever happens, and
+// a non-nil result is not by itself news — every poll after the first returns
+// something, usually the same claim as last time. Callers compare it against
+// the hub they are already connected to rather than treating each answer as a
+// switch (StartupConnection and Watch in the failover package both do).
+//
+// Falling back to the previous winner is a real answer, not an error: with no
+// usable claim this poll, the correct behaviour is to leave the existing
+// connection alone. A worker that disconnected whenever it was unsure would
+// turn every hub blip into a worker outage, which is strictly worse than
+// talking to a hub that might be stale.
 func (r *Resolver) Resolve(ctx context.Context) *Claim {
 	claims := r.gather(ctx)
 	winner := r.pick(claims)
