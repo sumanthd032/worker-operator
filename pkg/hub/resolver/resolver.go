@@ -201,6 +201,17 @@ func (r *Resolver) gather(ctx context.Context) []Claim {
 		case !verdict.Reachable:
 			r.log.V(1).Info("hub candidate unreachable", "hub", candidate.Name,
 				"endpoint", candidate.Endpoint, "error", verdict.Err)
+		case verdict.Err != nil:
+			// Reachable but the read still failed — NewProbe's NotFound case:
+			// the hub answered and this worker has no Cluster CR there. That is
+			// a misconfiguration (wrong cluster name or namespace, or RBAC on
+			// that hub), not the silent non-HA path below, and folding the two
+			// together dropped the error without trace. Still V(1), because it
+			// is also what a Standby looks like before it has mirrored this
+			// worker's CR; a persistent one is meant to be found through
+			// kubeslice_worker_hub_probe_errors_total, which counts it.
+			r.log.V(1).Info("hub candidate answered but its copy of this worker's Cluster CR could not be read",
+				"hub", candidate.Name, "endpoint", candidate.Endpoint, "error", verdict.Err)
 		case verdict.Claim == nil:
 			// The hub answered and published nothing. This is what a non-HA
 			// deployment looks like from here, and it must stay silent at info

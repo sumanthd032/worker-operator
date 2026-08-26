@@ -195,9 +195,15 @@ func New(cfg Config, primary hub.Connection, log logr.Logger,
 	// Count probe failures without changing the verdict: an unreachable hub is
 	// already handled by the rule, but a hub that is quietly unreachable for
 	// days is the thing an operator needs to see before a failover, not after.
+	//
+	// Every failed read counts, which is what the metric's help text promises
+	// and what gating on Reachable alone did not deliver: a hub that answers
+	// but has no Cluster CR for this worker returns Reachable with an error,
+	// and that misconfiguration used to be invisible here as well as in the
+	// resolver's log.
 	counted := func(ctx context.Context, c resolver.HubCandidate) resolver.Verdict {
 		v := probe(ctx, c)
-		if !v.Reachable {
+		if !v.Reachable || v.Err != nil {
 			hubProbeErrorsTotal.WithLabelValues(c.Name).Inc()
 		}
 		return v
