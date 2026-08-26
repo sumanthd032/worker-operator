@@ -20,6 +20,7 @@ package resolver
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -86,8 +87,33 @@ func NewProbe(readerFor func(HubCandidate) (ClusterReader, error), cfg ProbeConf
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = DefaultProbeTimeout
 	}
+	// Built once per candidate and kept, which is what the comment above
+	// describes and what this did not do: readerFor was called inside the
+	// closure below, so every poll constructed a fresh client and with it a
+	// fresh lazy RESTMapper, whose first use costs a discovery round-trip
+	// against that hub — once per candidate per poll, forever. A failed
+	// construction is deliberately not cached, so a hub that could not be
+	// built at one poll is retried at the next.
+	var (
+		mu      sync.Mutex
+		readers = make(map[string]ClusterReader)
+	)
+	readerOnce := func(candidate HubCandidate) (ClusterReader, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r, built := readers[candidate.Endpoint]; built {
+			return r, nil
+		}
+		r, err := readerFor(candidate)
+		if err != nil {
+			return nil, err
+		}
+		readers[candidate.Endpoint] = r
+		return r, nil
+	}
+
 	return func(ctx context.Context, candidate HubCandidate) Verdict {
-		reader, err := readerFor(candidate)
+		reader, err := readerOnce(candidate)
 		if err != nil {
 			return Verdict{Candidate: candidate, Err: err}
 		}

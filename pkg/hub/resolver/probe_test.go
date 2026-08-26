@@ -20,6 +20,7 @@ package resolver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -168,6 +169,56 @@ func TestProbe_ReaderConstructionFailureIsReported(t *testing.T) {
 // hanging until the OS TCP timeout, minutes later. The controller side of this
 // feature shipped exactly that bug and measured a single read blocking ~12s
 // against a stopped API server.
+// TestProbe_BuildsEachCandidateReaderOnce pins what NewProbe's doc comment
+// promises: a candidate's client is constructed at the first probe and kept.
+// Rebuilding it per poll meant a fresh lazy RESTMapper each time, and a
+// discovery round-trip against that hub on its first use.
+func TestProbe_BuildsEachCandidateReaderOnce(t *testing.T) {
+	built := map[string]int{}
+	reader := readerFunc(func(_ context.Context, _ types.NamespacedName, into *unstructured.Unstructured) error {
+		into.Object = clusterWith(nil).Object
+		return nil
+	})
+	probe := NewProbe(func(c HubCandidate) (ClusterReader, error) {
+		built[c.Endpoint]++
+		return reader, nil
+	}, ProbeConfig{ClusterName: testCluster, Namespace: testNamespace})
+
+	for i := 0; i < 3; i++ {
+		probe(context.Background(), hubA)
+		probe(context.Background(), hubB)
+	}
+
+	assert.Equal(t, 1, built[hubA.Endpoint], "each candidate's reader must be built exactly once")
+	assert.Equal(t, 1, built[hubB.Endpoint])
+}
+
+// TestProbe_RebuildsAReaderThatFailedToBuild is the other half: a failed
+// construction must not be cached, or a hub that was briefly unreachable at the
+// first poll would stay unprobeable for the life of the process.
+func TestProbe_RebuildsAReaderThatFailedToBuild(t *testing.T) {
+	attempts := 0
+	reader := readerFunc(func(_ context.Context, _ types.NamespacedName, into *unstructured.Unstructured) error {
+		into.Object = clusterWith(nil).Object
+		return nil
+	})
+	probe := NewProbe(func(HubCandidate) (ClusterReader, error) {
+		attempts++
+		if attempts == 1 {
+			return nil, errors.New("no credentials yet")
+		}
+		return reader, nil
+	}, ProbeConfig{ClusterName: testCluster, Namespace: testNamespace})
+
+	first := probe(context.Background(), hubA)
+	assert.False(t, first.Reachable, "a hub whose reader will not build is not reachable")
+	assert.Error(t, first.Err)
+
+	second := probe(context.Background(), hubA)
+	assert.True(t, second.Reachable, "the next poll must retry the construction")
+	assert.Equal(t, 2, attempts)
+}
+
 func TestProbe_BoundsAHangingRead(t *testing.T) {
 	hang := readerFunc(func(ctx context.Context, _ types.NamespacedName, _ *unstructured.Unstructured) error {
 		<-ctx.Done() // never answers; only the probe's own deadline ends this
