@@ -712,7 +712,7 @@ var EventsMap = map[events.EventName]*events.EventSchema{
 	},
 	"ControllerConnected": {
 		Name:                "ControllerConnected",
-		Reason:              "Connected",
+		Reason:              "ControllerConnected",
 		Action:              "None",
 		Type:                events.EventTypeNormal,
 		ReportingController: "worker",
@@ -720,7 +720,7 @@ var EventsMap = map[events.EventName]*events.EventSchema{
 	},
 	"ControllerConnectionLost": {
 		Name:                "ControllerConnectionLost",
-		Reason:              "DialFailed",
+		Reason:              "ControllerConnectionLost",
 		Action:              "None",
 		Type:                events.EventTypeWarning,
 		ReportingController: "worker",

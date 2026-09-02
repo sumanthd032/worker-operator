@@ -516,13 +516,13 @@ events:
     reportingController: worker
     message: This worker followed a resolved controller failover and is now reconciling against a different hub endpoint
   - name: ControllerConnected
-    reason: Connected
+    reason: ControllerConnected
     action: None
     type: Normal
     reportingController: worker
     message: Connection to the hub controller is healthy
   - name: ControllerConnectionLost
-    reason: DialFailed
+    reason: ControllerConnectionLost
     action: None
     type: Warning
     reportingController: worker
