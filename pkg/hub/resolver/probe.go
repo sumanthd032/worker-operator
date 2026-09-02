@@ -20,6 +20,7 @@ package resolver
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -125,11 +126,14 @@ func NewProbe(readerFor func(HubCandidate) (ClusterReader, error), cfg ProbeConf
 		obj.SetGroupVersionKind(clusterGVK)
 		key := types.NamespacedName{Name: cfg.ClusterName, Namespace: cfg.Namespace}
 		if err := reader.Get(readCtx, key, obj); err != nil {
-			if apierrors.IsNotFound(err) {
-				// The hub answered; this worker simply has no Cluster CR there.
-				// That is a reachable hub with nothing to say, not an outage —
-				// and treating it as unreachable would hide a real
-				// misconfiguration behind a connectivity error.
+			// An error carrying an API status came from the hub's own API
+			// server, so the hub answered. NotFound (this worker has no
+			// Cluster CR there) and Forbidden/Unauthorized (RBAC on that hub)
+			// are misconfigurations, not outages, and reporting either as
+			// unreachable would hide one behind a connectivity error. Only a
+			// transport failure means the hub never answered at all.
+			var status apierrors.APIStatus
+			if errors.As(err, &status) {
 				return Verdict{Candidate: candidate, Reachable: true, Err: err}
 			}
 			return Verdict{Candidate: candidate, Err: err}

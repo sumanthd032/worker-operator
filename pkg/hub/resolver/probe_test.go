@@ -146,6 +146,23 @@ func TestProbe_NotFoundIsReachable(t *testing.T) {
 	assert.Error(t, got.Err)
 }
 
+// TestProbe_ForbiddenIsReachable is the RBAC half of the same distinction. A
+// hub that refuses the read has still proved it is up, so it belongs on the
+// resolver's "answered but could not be read" path; reporting it as
+// unreachable sends an operator hunting a network fault that does not exist.
+func TestProbe_ForbiddenIsReachable(t *testing.T) {
+	forbidden := apierrors.NewForbidden(
+		schema.GroupResource{Group: clusterGVK.Group, Resource: "clusters"},
+		testCluster,
+		fmt.Errorf("clusters.controller.kubeslice.io is forbidden"),
+	)
+	got := probeReturning(t, nil, forbidden, time.Second)(context.Background(), hubA)
+
+	assert.True(t, got.Reachable, "the API server answered; it just refused the read")
+	assert.Nil(t, got.Claim)
+	assert.Error(t, got.Err)
+}
+
 func TestProbe_TransportFailureIsUnreachable(t *testing.T) {
 	got := probeReturning(t, nil, fmt.Errorf("connection refused"), time.Second)(context.Background(), hubA)
 	assert.False(t, got.Reachable)
