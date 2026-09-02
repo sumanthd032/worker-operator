@@ -23,6 +23,7 @@ import (
 	"flag"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/kubeslice/kubeslice-monitoring/pkg/metrics"
 	"github.com/kubeslice/worker-operator/controllers"
@@ -363,6 +364,11 @@ func main() {
 	}
 }
 
+// reportConnectionLostTimeout bounds the whole best-effort report below. Five
+// seconds is DefaultProbeTimeout, the budget this feature already gives a
+// single hub read; three calls get double it.
+const reportConnectionLostTimeout = 10 * time.Second
+
 // reportConnectionLost makes one best-effort attempt to record, on the hub
 // this worker is about to leave, that it is doing so (issue #469's
 // ControllerConnectionLost event and Reconnecting condition). Best-effort
@@ -370,8 +376,16 @@ func main() {
 // worker is abandoning — if that hub is itself the reason for the switch,
 // there is nothing to write to, and that failure is expected, not fatal.
 func reportConnectionLost(hubClient client.Client, er *monitoringEvents.EventRecorder) {
+	// One bounded budget shared by all three writes below. The hub being
+	// written to is the one this worker is abandoning, so it may accept the
+	// socket and then never answer; an unbounded read there would hold up the
+	// restart that follows the failover until the OS TCP timeout, which is the
+	// one thing this best-effort path must never do.
+	ctx, cancel := context.WithTimeout(context.Background(), reportConnectionLostTimeout)
+	defer cancel()
+
 	cr := &hubv1alpha1.Cluster{}
-	err := hubClient.Get(context.Background(), client.ObjectKey{
+	err := hubClient.Get(ctx, client.ObjectKey{
 		Name:      controllers.ClusterName,
 		Namespace: hub.ProjectNamespace,
 	}, cr)
@@ -385,9 +399,9 @@ func reportConnectionLost(hubClient client.Client, er *monitoringEvents.EventRec
 		Reason:  hubCluster.ReasonReconnecting,
 		Message: "following a resolved hub failover; reconnecting",
 	})
-	if err := hubClient.Status().Update(context.Background(), cr); err != nil {
+	if err := hubClient.Status().Update(ctx, cr); err != nil {
 		setupLog.With("error", err).Info("could not persist the Reconnecting condition before restart")
 		return
 	}
-	utils.RecordEvent(context.Background(), er, cr, nil, ossEvents.EventControllerConnectionLost, "hub-failover")
+	utils.RecordEvent(ctx, er, cr, nil, ossEvents.EventControllerConnectionLost, "hub-failover")
 }
